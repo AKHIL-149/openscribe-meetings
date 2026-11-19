@@ -8,3 +8,10 @@ release/
 *.log
 .claude/
 build/node/
+*.enc
+vault.key
+voices.json
+mr-test-profile*
+bot-steps.log
+*.gguf
+*.onnx

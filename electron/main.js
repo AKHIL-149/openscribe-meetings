@@ -80,6 +80,15 @@ function createWindow(port) {
 
 function setupPermissions() {
   const ses = session.defaultSession;
+  // Data stays on this computer: the app window may only talk to the app's own local server. Anything else
+  // (analytics, fonts, CDNs, a compromised dependency phoning home) is refused. Downloads of models and the
+  // optional cloud services run in the server process, not here, and are listed in PRIVACY.md.
+  ses.webRequest.onBeforeRequest((details, cb) => {
+    let ok = false;
+    try { const u = new URL(details.url); ok = ['127.0.0.1', 'localhost', '[::1]'].includes(u.hostname) || ['data:', 'blob:', 'devtools:', 'file:'].includes(u.protocol); } catch { /* unparsable: refuse */ }
+    if (!ok) console.error('[privacy] blocked a request from the app window to an outside address');
+    cb({ cancel: !ok });
+  });
   const ours = (url) => url.startsWith(origin);
   ses.setPermissionRequestHandler((wc, permission, cb, details) => cb(['media', 'display-capture'].includes(permission) && ours(details.requestingUrl)));
   ses.setPermissionCheckHandler((wc, permission, requestingOrigin) => ['media', 'display-capture'].includes(permission) && requestingOrigin.startsWith(origin));
@@ -106,8 +115,8 @@ app.whenReady().then(async () => {
     return;
   }
   const { listening, setBotHost } = await import('../server.js');
-  const { joinMeeting, leaveAllBots } = await import('./bot.js');
-  setBotHost({ join: joinMeeting });
+  const { joinMeeting, leaveAllBots, openSignIn, forgetSignIn } = await import('./bot.js');
+  setBotHost({ join: joinMeeting, openSignIn, forgetSignIn });
   app.on('before-quit', leaveAllBots);
   const port = await listening;
   setupPermissions();

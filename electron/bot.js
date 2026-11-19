@@ -105,10 +105,12 @@ ipcMain.on('bot:tracks', (e, n) => { const bot = bySender.get(e.sender.id); if (
  * Join a meeting. Callbacks: onStatus(code, detail?), onAudio(Buffer PCM16 16 kHz mono), onEnd(reason?, fatal?).
  * Returns { leave, show }.
  */
-export function joinMeeting({ meetingId, url, name, onStatus, onAudio, onEnd }) {
+export function joinMeeting({ meetingId, url, name, useAccount = false, onStatus, onAudio, onEnd }) {
   if (bots.has(meetingId)) throw new Error('This bot is already running');
   const platform = detectPlatform(url);
-  const ses = session.fromPartition(`bot-${meetingId}`); // no "persist:" prefix: nothing is written to disk
+  // Default: a throwaway in-memory profile (no "persist:" prefix), so nothing is written to disk.
+  // With a saved bot sign-in the join uses the bot account's own profile instead (see openSignIn).
+  const ses = useAccount ? session.fromPartition(ACCOUNT_PARTITION) : session.fromPartition(`bot-${meetingId}`);
   // Listen-only. The page is given a virtual silent mic/black camera (bot-preload.cjs), so it never needs a real
   // one: any real request is refused. Reporting mic/camera as "granted" just lets Meet skip its permission screen.
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
@@ -157,7 +159,7 @@ export function joinMeeting({ meetingId, url, name, onStatus, onAudio, onEnd }) 
         case 'waiting': set('in_waiting_room'); break;
         case 'incall': bot.wasInCall = true; set(bot.gotAudio ? 'in_call_recording' : 'in_call_not_recording'); break;
         case 'captcha': set('needs_you', 'The meeting site is asking for a human check. Click “Show bot window” and complete it.'); break;
-        case 'signin': set('needs_you', 'This meeting only lets signed-in people join. The bot cannot join as a guest.'); break;
+        case 'signin': set('needs_you', 'This meeting only lets signed-in people join. Use “Sign the bot in” on the home screen (once), then send the bot again.'); break;
         case 'denied': finish('The host did not admit the bot (or removed it).', !bot.wasInCall); return;
         case 'ended': if (bot.wasInCall) { finish('The meeting ended.'); return; } break;
       }
@@ -186,6 +188,33 @@ export function joinMeeting({ meetingId, url, name, onStatus, onAudio, onEnd }) 
     },
     show: () => { if (!win.isDestroyed()) { win.show(); win.focus(); } },
   };
+}
+
+/*
+ * Optional bot sign-in. Some meetings only admit signed-in people. The USER signs in themselves, in a normal
+ * browser window the app opens; the app never reads, types or stores a password. What is kept is the site's
+ * own session cookie, in this app's separate "bot account" browser profile (Chromium protects cookie values
+ * with the OS keychain). Use a dedicated bot account, not a personal one. "Forget" wipes the profile.
+ */
+export const ACCOUNT_PARTITION = 'persist:bot-account';
+const SIGN_IN_URLS = { google: 'https://accounts.google.com/', microsoft: 'https://login.microsoftonline.com/', zoom: 'https://zoom.us/signin' };
+
+export function openSignIn(provider, onClosed) {
+  const url = SIGN_IN_URLS[provider];
+  if (!url) throw new Error('Unknown sign-in provider');
+  const ses = session.fromPartition(ACCOUNT_PARTITION);
+  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  const win = new BrowserWindow({ width: 520, height: 720, title: 'Sign the bot in', webPreferences: { session: ses, contextIsolation: true, sandbox: true, nodeIntegration: false } });
+  win.webContents.setUserAgent(win.webContents.getUserAgent().replace(/ Electron\/\S+/, '').replace(/ meeting-recorder\/\S+/i, '').replace(/ Meeting Recorder\/\S+/i, ''));
+  win.webContents.setWindowOpenHandler(({ url: u }) => { if (/^https:/.test(u)) win.loadURL(u); return { action: 'deny' }; });
+  win.on('closed', () => onClosed?.());
+  win.loadURL(url);
+}
+
+export async function forgetSignIn() {
+  const ses = session.fromPartition(ACCOUNT_PARTITION);
+  await ses.clearStorageData();
+  await ses.clearCache();
 }
 
 export function leaveAllBots() { for (const b of [...bots.values()]) b.finish('The app is closing.'); }

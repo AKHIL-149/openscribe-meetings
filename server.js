@@ -254,6 +254,8 @@ app.post('/api/local/llm/pull', wrap(async (req, res) => {
 let botHost = null;
 export const setBotHost = (h) => { botHost = h; };
 const localBots = new Map(); // meetingId -> { leave, show }
+const botAccount = () => { try { return readJSON(SETTINGS_FILE).obj.botAccount || null; } catch { return null; } };
+const setBotAccount = (v) => { let s = {}; try { s = readJSON(SETTINGS_FILE).obj; } catch { /* new */ } if (v) s.botAccount = v; else delete s.botAccount; writeJSON(SETTINGS_FILE, s); };
 const useLocalBot = () => Boolean(botHost) && BOT_PROVIDER !== 'recall';
 
 const BOT_TERMINAL = new Set(['done', 'fatal']);
@@ -282,7 +284,7 @@ app.post('/api/bots', wrap(async (req, res) => {
   try { url = new URL(String(req.body.meetingUrl || '').trim()); } catch { /* handled below */ }
   if (!url || !/^https?:$/.test(url.protocol)) throw Object.assign(new Error('Enter a valid meeting link (https://…)'), { status: 400 });
   const botName = String(req.body.botName || 'Meeting Notetaker').slice(0, 100);
-  if (useLocalBot()) return res.status(201).json(startLocalBot(url, botName, String(req.body.title || '').slice(0, 200)));
+  if (useLocalBot()) return res.status(201).json(startLocalBot(url, botName, String(req.body.title || '').slice(0, 200), req.body.useAccount !== false));
   const bot = await recall('/bot/', {
     method: 'POST',
     body: { meeting_url: url.href, bot_name: botName, recording_config: { transcript: { provider: { recallai_streaming: {} } } } },
@@ -307,7 +309,7 @@ app.post('/api/bots', wrap(async (req, res) => {
   res.status(201).json(m);
 }));
 
-function startLocalBot(url, botName, title) {
+function startLocalBot(url, botName, title, useAccount = true) {
   const m = {
     id: crypto.randomUUID(),
     title: title || `Meeting ${new Date().toLocaleString()}`,
@@ -328,7 +330,7 @@ function startLocalBot(url, botName, title) {
   let handle;
   try {
     handle = botHost.join({
-      meetingId: m.id, url: url.href, name: botName,
+      meetingId: m.id, url: url.href, name: botName, useAccount: Boolean(botAccount()) && useAccount,
       onStatus: (code, detail) => { m.botStatus = code; if (detail) m.botNote = detail; else delete m.botNote; save(m); },
       onAudio: (pcm) => S.push(Buffer.concat([Buffer.from([1]), pcm])),
       onEnd: (reason, fatal) => {
@@ -346,6 +348,20 @@ function startLocalBot(url, botName, title) {
   localBots.set(m.id, handle);
   return m;
 }
+
+// Optional saved bot sign-in (you sign in yourself in a window the app opens; no password ever reaches the app).
+app.get('/api/bot-account', (_req, res) => res.json({ available: Boolean(botHost?.openSignIn), account: botAccount() }));
+app.post('/api/bot-account/sign-in', wrap((req, res) => {
+  const provider = String(req.body?.provider || '');
+  if (!botHost?.openSignIn) throw Object.assign(new Error('Bot sign-in is part of the desktop app.'), { status: 400 });
+  if (!['google', 'microsoft', 'zoom'].includes(provider)) throw Object.assign(new Error('Unknown provider'), { status: 400 });
+  botHost.openSignIn(provider, () => setBotAccount({ provider, at: new Date().toISOString() })); // recorded when the sign-in window is closed
+  res.json({ ok: true });
+}));
+app.delete('/api/bot-account', wrap(async (_req, res) => {
+  await botHost?.forgetSignIn?.(); setBotAccount(null);
+  res.json({ ok: true });
+}));
 
 app.post('/api/meetings/:id/bot/show', wrap((req, res) => {
   const h = localBots.get(getMeeting(req).id);
@@ -714,7 +730,8 @@ function createSession(m, { lang, diarizeMic }) {
           wantEmb ? spk.embed(x).catch((e) => { spkFailed(e); return null; }) : null,
         ]);
         const drop = isHallucination(text, d);
-        if (DEBUG) console.log(`[stt] ch${ch} ${p.start.toFixed(1)}s ${drop ? 'DROPPED ' : ''}${JSON.stringify(text)}`);
+        // Transcript text is private: debug logs show only lengths unless you explicitly ask for text with MR_DEBUG_TEXT=1.
+        if (DEBUG) console.log(`[stt] ch${ch} ${p.start.toFixed(1)}s ${drop ? 'DROPPED ' : ''}${process.env.MR_DEBUG_TEXT ? JSON.stringify(text) : `${text.length} chars`}`);
         if (drop) continue;
         const base = { start: Math.round((seg.start + p.start) * 10) / 10, dur: Math.round(d * 10) / 10, text };
         if (emb && S.tracker) {

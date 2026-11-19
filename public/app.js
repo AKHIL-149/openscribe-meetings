@@ -249,6 +249,27 @@ function botCard() {
   const url = h('input', { class: 'grow', placeholder: 'Paste a Meet, Zoom, Teams or Webex link', type: 'url' });
   const name = h('input', { value: 'Meeting Notetaker', style: 'width:200px', maxlength: '100', title: 'Name the bot shows in the meeting' });
   const err = h('div');
+  // Optional saved bot sign-in, for meetings that only admit signed-in people.
+  const acct = h('div', { class: 'muted', style: 'margin-top:10px;font-size:13px' });
+  let polls = 0;
+  async function drawAcct() {
+    let a; try { a = await api('/api/bot-account'); } catch { return; }
+    if (!a.available || !local) { acct.replaceChildren(); return; }
+    const signIn = (provider) => h('button', { onclick: async () => {
+      try { await api('/api/bot-account/sign-in', { method: 'POST', body: { provider } }); } catch (e) { alert(e.message); return; }
+      polls = 20; const t = setInterval(() => { if (!document.contains(acct) || --polls <= 0) return clearInterval(t); drawAcct(); }, 3000);
+    } }, provider === 'google' ? 'Google (Meet)' : provider === 'microsoft' ? 'Microsoft (Teams)' : 'Zoom');
+    if (a.account) {
+      acct.replaceChildren(`✓ The bot joins signed in (${a.account.provider}). `, h('button', { onclick: async () => {
+        if (!confirm('Forget the bot sign-in? Its saved session on this computer is deleted.')) return;
+        await api('/api/bot-account', { method: 'DELETE' }); drawAcct();
+      } }, 'Forget bot sign-in'));
+    } else {
+      acct.replaceChildren('Some meetings only let signed-in people in. Optional: sign the bot in once ', signIn('google'), ' ', signIn('microsoft'), ' ', signIn('zoom'),
+        h('div', {}, 'Use a dedicated bot account, not your own. You type the password yourself in the window that opens; this app never sees or stores it. It keeps only the site\'s session cookie, on this computer. Close that window when done.'));
+    }
+  }
+  drawAcct();
   const btn = h('button', { class: 'primary', onclick: async () => {
     if (!url.value.trim()) return;
     btn.disabled = true; err.replaceChildren();
@@ -262,7 +283,7 @@ function botCard() {
     h('p', { class: 'muted' }, local
       ? 'A guest joins your link from this computer, listens, and transcribes live on this device. Nothing leaves your computer and no account or key is needed. It shows up as a visible participant, and the host may need to admit it. It cannot join meetings that require signing in.'
       : 'The bot joins as a visible participant (you may need to admit it from the waiting room). The transcript and recording appear here after the meeting ends.'),
-    h('div', { class: 'row' }, url, name, btn), err);
+    h('div', { class: 'row' }, url, name, btn), err, acct);
 }
 
 const BOT_LABELS = {
