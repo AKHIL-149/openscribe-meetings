@@ -151,6 +151,7 @@ export class SpeakerEngine {
  * middle of the overlap and both sides are flagged. Tiny pieces are absorbed by a neighbour.
  * Returns [{ start, end, overlap }] in seconds relative to the utterance; one piece = no split.
  */
+const OVERLAP_MIN_SEC = 0.3;
 export function splitUtterance(turns, duration, { minPiece = 0.6 } = {}) {
   const t = [...turns].sort((a, b) => a.start - b.start);
   const whole = [{ start: 0, end: duration, overlap: false }];
@@ -169,8 +170,9 @@ export function splitUtterance(turns, duration, { minPiece = 0.6 } = {}) {
   for (let i = 0; i < runs.length; i++) {
     const cur = runs[i], next = runs[i + 1], prev = runs[i - 1];
     const start = prev ? Math.min(Math.max(prev.end, 0), cur.start) : 0;
-    const overlapNext = next && cur.end > next.start;
-    const overlapPrev = prev && prev.end > cur.start;
+    // Real recordings give jittery turn boundaries: only count people talking over each other when it lasts a moment.
+    const overlapNext = next && cur.end - next.start >= OVERLAP_MIN_SEC;
+    const overlapPrev = prev && prev.end - cur.start >= OVERLAP_MIN_SEC;
     const from = prev ? (overlapPrev ? (cur.start + prev.end) / 2 : (prev.end + cur.start) / 2) : 0;
     const to = next ? (overlapNext ? (next.start + cur.end) / 2 : (cur.end + next.start) / 2) : duration;
     pieces.push({ start: Math.max(0, from), end: Math.min(duration, to), overlap: Boolean(overlapNext || overlapPrev) });
@@ -203,6 +205,13 @@ export class SpeakerTracker {
     this.speakers = profiles.map((p) => ({ id: `p:${p.id}`, name: p.name, profile: true, centroid: normalize(p.emb), n: Math.max(1, p.n || 1) }));
     this.counter = 0;
     this.last = null; // last speaker id: used for very short utterances
+  }
+
+  /** Adopt the voices found by a mid-meeting cleanup, so later lines continue with the same names. */
+  reseed(clusters) {
+    const keep = this.speakers.filter((s) => s.profile);
+    this.speakers = [...keep, ...clusters.filter((c) => !keep.some((k) => k.name === c.name)).map((c, i) => ({ id: `r${i}`, name: c.name, profile: false, centroid: c.centroid, n: 8 }))];
+    this.counter = Math.max(0, ...this.speakers.map((s) => Number((/^Speaker (\d+)$/.exec(s.name) || [])[1]) || 0));
   }
 
   _fresh() {
@@ -246,9 +255,72 @@ export class SpeakerTracker {
 
 /* ------------------------------------------------- end-of-meeting refine */
 
+const MIN_PERSON_SEC = 8; // ...and at least this many seconds of clear speech
+const SIGNIFICANT = 0.04; // a "person" holds at least this share of the speech; smaller groups are noise fragments
+
+/**
+ * Cluster the clear utterances with average-free centroid linkage and decide HOW MANY people there are from the
+ * data instead of a fixed similarity threshold (real recordings score much lower than clean ones, so any fixed
+ * threshold is wrong for one of them). The number of "significant" clusters (>= 4% of the speech) is tracked
+ * as clusters merge; the cut is made where that number is most stable (the widest plateau, preferring more
+ * speakers, because a wrongly split voice is easy to fix and a wrongly merged pair is not).
+ * items: [{ v (unit vector), w (weight) }]. Returns clusters [{ idx: number[], centroid }] of significant groups.
+ */
+function significantClusters(items) {
+  let pool = items;
+  if (pool.length > 700) pool = [...items].sort((a, b) => b.w - a.w).slice(0, 700); // keep the O(n^2) matrix small on very long meetings
+  const n = pool.length, dim = pool[0].v.length, total = pool.reduce((s, x) => s + x.w, 0);
+  if (n < 3) return [];
+  const sum = pool.map((x) => Float32Array.from(x.v, (c) => c * x.w)), mass = pool.map((x) => x.w), members = pool.map((_, i) => [i]);
+  const unit = (v) => { let m = 0; for (let i = 0; i < dim; i++) m += v[i] * v[i]; m = Math.sqrt(m) || 1; return Float32Array.from(v, (c) => c / m); };
+  const cen = pool.map((x) => Float32Array.from(x.v));
+  const sim = new Float32Array(n * n).fill(-2);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) sim[i * n + j] = cosine(cen[i], cen[j]);
+  const alive = new Array(n).fill(true);
+  let sig = 0; const levels = []; // after each merge: the similarity it happened at, and how many significant clusters exist
+  const minMass = Math.max(SIGNIFICANT * total, MIN_PERSON_SEC); // also an absolute floor, so a short meeting cannot invent people
+  const isSig = (i) => mass[i] >= minMass;
+  for (let step = 0; step < n - 1; step++) {
+    let bi = -1, bj = -1, bs = -3;
+    for (let i = 0; i < n; i++) { if (!alive[i]) continue; for (let j = i + 1; j < n; j++) if (alive[j] && sim[i * n + j] > bs) { bs = sim[i * n + j]; bi = i; bj = j; } }
+    if (bi < 0) break;
+    if (isSig(bi)) sig--; if (isSig(bj)) sig--;
+    for (let k = 0; k < dim; k++) sum[bi][k] += sum[bj][k];
+    mass[bi] += mass[bj]; members[bi].push(...members[bj]); alive[bj] = false; cen[bi] = unit(sum[bi]);
+    if (isSig(bi)) sig++;
+    for (let k = 0; k < n; k++) if (alive[k] && k !== bi) sim[Math.min(k, bi) * n + Math.max(k, bi)] = cosine(cen[k], cen[bi]);
+    levels.push({ sim: bs, sig });
+  }
+  // Plateaus: runs of consecutive merges with the same significant-cluster count.
+  const plateaus = [];
+  for (let i = 0; i < levels.length;) {
+    let j = i; while (j + 1 < levels.length && levels[j + 1].sig === levels[i].sig) j++;
+    plateaus.push({ sig: levels[i].sig, from: i, to: j, width: levels[i].sim - levels[j].sim }); i = j + 1;
+  }
+  if (process.env.MR_DEBUG_SPK) console.error('[spk] plateaus', plateaus.map((p) => `K${p.sig}:w${p.width.toFixed(2)}`).join(' '));
+  const solid = plateaus.filter((p) => p.sig >= 1 && p.width >= 0.05);
+  const pick = (solid.length ? solid : plateaus.filter((p) => p.sig >= 1)).sort((a, b) => b.sig - a.sig || b.width - a.width)[0];
+  if (!pick) return [];
+  // Replay the merges up to the end of the chosen plateau.
+  const m2 = pool.map((_, i) => [i]), s2 = pool.map((x) => Float32Array.from(x.v, (c) => c * x.w)), a2 = new Array(n).fill(true), c2 = pool.map((x) => Float32Array.from(x.v));
+  const sm = new Float32Array(sim.length).fill(-2);
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) sm[i * n + j] = cosine(c2[i], c2[j]);
+  for (let step = 0; step <= pick.to; step++) {
+    let bi = -1, bj = -1, bs = -3;
+    for (let i = 0; i < n; i++) { if (!a2[i]) continue; for (let j = i + 1; j < n; j++) if (a2[j] && sm[i * n + j] > bs) { bs = sm[i * n + j]; bi = i; bj = j; } }
+    for (let k = 0; k < dim; k++) s2[bi][k] += s2[bj][k];
+    m2[bi].push(...m2[bj]); a2[bj] = false; c2[bi] = unit(s2[bi]);
+    for (let k = 0; k < n; k++) if (a2[k] && k !== bi) sm[Math.min(k, bi) * n + Math.max(k, bi)] = cosine(c2[k], c2[bi]);
+  }
+  const out = [];
+  for (let i = 0; i < n; i++) if (a2[i] && m2[i].reduce((s, k) => s + pool[k].w, 0) >= minMass) out.push({ idx: m2[i].map((k) => pool[k]), centroid: c2[i] });
+  return out;
+}
+
 /**
  * Re-cluster a finished meeting. Early utterances were labelled before the app had heard enough of each
- * voice; this merges duplicate speakers and re-assigns every segment against the final voiceprints.
+ * voice, and on real recordings the live tracker over-splits. This groups the clear utterances, works out
+ * how many people there really are, and re-assigns every segment to the nearest of those voices.
  * segments: [{ speaker, emb(b64), dur, manual? }]; profiles as for SpeakerTracker.
  * Mutates the segments (speaker, uncertain, overlap, sim, margin) and returns the speaker names in order.
  */
@@ -256,81 +328,80 @@ export function refineMeeting(segments, { profiles = [], tuning = {} } = {}) {
   const t = { ...TUNING, ...tuning };
   const items = segments.map((seg) => ({ seg, v: seg.emb ? normalize(fromB64(seg.emb)) : null })).filter((x) => x.v);
   if (items.length < 2) return [];
+  const generic = (name) => /^Speaker \d+$/.test(name);
+  // "Noisy" is relative to this recording: a room mic that is ~12 dB everywhere is normal, a line 3 dB below that is not.
+  const snrs = segments.map((s) => s.snr).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  const medSnr = snrs.length ? snrs[Math.floor(snrs.length / 2)] : null;
+  const noisyLine = (seg) => (Number.isFinite(seg.snr) && medSnr !== null ? seg.snr < Math.min(10, medSnr - 3) : Boolean(seg.noisy));
+  const clear = (it) => (it.seg.dur || 0) >= 1.5 && !it.seg.crosstalk && !noisyLine(it.seg);
 
-  // 1. Start from the live labels' centroids (manual corrections included, they are ground truth).
-  const byName = new Map();
-  for (const it of items) {
-    const k = it.seg.speaker;
-    if (!byName.has(k)) byName.set(k, []);
-    byName.get(k).push({ v: it.v, w: Math.min(3, Math.max(0.3, it.seg.dur || 1)) * (it.seg.uncertain && !it.seg.manual ? 0.3 : 1) });
-  }
-  let clusters = [...byName.entries()].map(([name, vs]) => ({ name, centroid: weightedMean(vs), locked: vs.length === 0 }));
-  for (const p of profiles) { // remembered voices are always clusters under their own name
+  // 1. Seeds: people who already have a real name (remembered voices, manual corrections) are ground truth.
+  let clusters = [];
+  const named = new Map();
+  for (const it of items) if (!generic(it.seg.speaker)) { if (!named.has(it.seg.speaker)) named.set(it.seg.speaker, []); named.get(it.seg.speaker).push({ v: it.v, w: Math.min(3, it.seg.dur || 1) }); }
+  for (const [name, vs] of named) clusters.push({ name, centroid: weightedMean(vs) });
+  for (const p of profiles) {
     const c = clusters.find((x) => x.name.toLowerCase() === p.name.toLowerCase());
     if (c) c.centroid = weightedMean([{ v: c.centroid, w: 1 }, { v: normalize(p.emb), w: 1 }]);
-    else clusters.push({ name: p.name, centroid: normalize(p.emb), locked: true });
+    else clusters.push({ name: p.name, centroid: normalize(p.emb) });
   }
 
-  // 2. Merge near-duplicate generic speakers ("Speaker 3" is really "Speaker 1").
-  const generic = (c) => /^Speaker \d+$/.test(c.name);
-  let merged = true;
-  while (merged) {
-    merged = false;
-    outer: for (let i = 0; i < clusters.length; i++) for (let j = i + 1; j < clusters.length; j++) {
-      const a = clusters[i], b = clusters[j];
-      if (!(generic(a) || generic(b))) continue; // never auto-merge two named people
-      if (cosine(a.centroid, b.centroid) >= t.merge) {
-        const keep = generic(a) && !generic(b) ? b : a, drop = keep === a ? b : a;
-        keep.centroid = weightedMean([{ v: a.centroid, w: 1 }, { v: b.centroid, w: 1 }]);
-        for (const it of items) if (it.seg.speaker === drop.name && !it.seg.manual) it.seg.speaker = keep.name;
-        clusters = clusters.filter((c) => c !== drop); merged = true; break outer;
-      }
-    }
+  // 2. Find the people among the clear, unnamed utterances; the count comes from the data.
+  const pool = items.filter((it) => generic(it.seg.speaker) && clear(it) && !it.seg.manual).map((it) => ({ v: it.v, w: Math.min(6, it.seg.dur || 1), it }));
+  const found = significantClusters(pool);
+  let k = 0;
+  const seeds = [...clusters]; // only remembered/named voices can absorb a found group
+  for (const f of found) {
+    const near = seeds.map((c) => ({ c, sim: cosine(f.centroid, c.centroid) })).sort((a, b) => b.sim - a.sim)[0];
+    if (near && near.sim >= t.merge) near.c.centroid = weightedMean([{ v: near.c.centroid, w: 1 }, { v: f.centroid, w: 1 }]); // same as a remembered voice
+    else clusters.push({ name: `Speaker ${++k}`, centroid: f.centroid });
   }
+  if (!clusters.length) return [];
 
-  // 3. Re-assign every non-manual segment to the nearest final voiceprint, then recompute confidence.
+  // 3. Assign every non-manual segment to its nearest voice (two passes so centroids settle).
+  const sims = [];
   for (let pass = 0; pass < 2; pass++) {
+    sims.length = 0;
     for (const it of items) {
       const ranked = clusters.map((c) => ({ c, sim: cosine(it.v, c.centroid) })).sort((a, b) => b.sim - a.sim);
       const best = ranked[0], second = ranked[1];
       const margin = best.sim - (second ? second.sim : 0);
-      const short = (it.seg.dur || 0) < t.minVoiceSec;
+      it.best = best.sim; it.margin = margin; it.second = second ? second.sim : -1;
       it.seg.sim = +best.sim.toFixed(3); it.seg.margin = +margin.toFixed(3);
-      // "crosstalk" is the segmenter's own finding that people spoke at once; it survives re-clustering.
-      it.seg.overlap = Boolean(it.seg.crosstalk || (second && best.sim >= t.overlapSecond && second.sim >= t.overlapSecond && margin < t.margin));
-      if (it.seg.manual) { it.seg.uncertain = false; continue; }
+      if (it.seg.manual) continue;
       it.seg.speaker = best.c.name;
-      it.seg.uncertain = Boolean(it.seg.crosstalk) || short || best.sim < t.match || margin < t.margin;
+      if (clear(it)) sims.push(best.sim);
     }
-    for (const c of clusters) { // refresh centroids from confident segments only
-      const vs = items.filter((it) => it.seg.speaker === c.name && !it.seg.uncertain).map((it) => ({ v: it.v, w: Math.min(3, it.seg.dur || 1) }));
-      if (vs.length) c.centroid = weightedMean(vs);
+    for (const c of clusters) { // refresh centroids from the clear segments assigned to each voice
+      const vs = items.filter((it) => it.seg.speaker === c.name && clear(it) && !it.seg.manual).map((it) => ({ v: it.v, w: Math.min(3, it.seg.dur || 1) }));
+      if (vs.length >= 2) c.centroid = weightedMean(vs);
     }
   }
 
-  // 4. Tiny clusters (one stray utterance) are noise, not people: fold them into the nearest voice, flagged.
-  for (const c of [...clusters]) {
-    if (!generic(c)) continue;
-    const mine = items.filter((it) => it.seg.speaker === c.name);
-    const secs = mine.reduce((s, it) => s + (it.seg.dur || 0), 0);
-    if (mine.length <= 1 && clusters.length > 1) {
-      const others = clusters.filter((o) => o !== c);
-      const near = mine.length ? others.map((o) => ({ o, sim: cosine(mine[0].v, o.centroid) })).sort((a, b) => b.sim - a.sim)[0] : null;
-      // a lone short utterance, or a lone one that is vaguely like someone known (noise?), is not a new person
-      if (!near || secs < 3 || mine[0].seg.noisy) { // too little evidence, or only heard through noise
-        for (const it of mine) { if (it.seg.manual) continue; it.seg.speaker = near.o.name; it.seg.uncertain = true; }
-        clusters = clusters.filter((x) => x !== c);
-      }
-    }
+  // 4. Confidence is relative to how well this meeting's own clear utterances fit their speaker (real audio scores
+  //    lower than clean audio), plus the margin to the runner-up. Short, noisy and crosstalk lines are always flagged.
+  sims.sort((a, b) => a - b);
+  const floor = sims.length ? Math.max(0.2, sims[Math.floor(sims.length * 0.1)]) : 0.3;
+  for (const it of items) {
+    // The overlap detector is only a hint on real audio (jittery turn boundaries): it counts when the voice itself is ambiguous too.
+    const ambiguous = it.margin < t.margin;
+    it.seg.overlap = Boolean((it.seg.crosstalk && ambiguous) || (it.second >= t.overlapSecond && it.best >= t.overlapSecond && it.margin < 0.05));
+    if (it.seg.manual) { it.seg.uncertain = false; continue; }
+    const noisy = noisyLine(it.seg);
+    if (it.seg.noisy !== undefined || noisy) { if (noisy) it.seg.noisy = true; else delete it.seg.noisy; }
+    it.seg.uncertain = Boolean(it.seg.crosstalk && ambiguous) || (it.seg.dur || 0) < t.minVoiceSec || noisy || it.best < floor || it.margin < 0.05;
   }
 
   // 5. Number generic speakers in order of first appearance.
   const order = [];
   for (const seg of segments) if (!order.includes(seg.speaker)) order.push(seg.speaker);
-  const renames = new Map(); let k = 0;
-  for (const name of order) if (/^Speaker \d+$/.test(name)) renames.set(name, `Speaker ${++k}`);
+  const renames = new Map(); let n = 0;
+  for (const name of order) if (generic(name)) renames.set(name, `Speaker ${++n}`);
   for (const seg of segments) if (renames.has(seg.speaker)) seg.speaker = renames.get(seg.speaker);
-  return order.map((n) => renames.get(n) || n);
+  for (const c of clusters) if (renames.has(c.name)) c.name = renames.get(c.name);
+  const names = order.map((x) => renames.get(x) || x);
+  names.clusters = clusters; // final voices (name + voiceprint), so a live tracker can continue from them
+  return names;
 }
 
 /* ---------------------------------------------------------------- stats */

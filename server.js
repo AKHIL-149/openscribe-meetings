@@ -679,6 +679,22 @@ function createSession(m, { lang, diarizeMic }) {
     save(m);                                          // also assigns seg.id
     const { emb, ...visible } = seg;                  // voiceprints never leave the server
     send({ type: 'segment', segment: visible });
+    liveCleanup();
+  };
+  // Real recordings make the live tracker over-split early on (many provisional "Speaker N"). Re-run the same
+  // end-of-meeting cleanup every so often during the meeting so labels settle, then continue from its voices.
+  let lastClean = { at: 0, n: 0 };
+  const liveCleanup = () => {
+    if (!S.tracker || S.stopped) return;
+    const withEmb = m.transcript.filter((t) => t.emb).length;
+    if (withEmb < 12 || withEmb - lastClean.n < 15 || Date.now() - lastClean.at < 20_000) return;
+    lastClean = { at: Date.now(), n: withEmb };
+    try {
+      const names = refineMeeting(m.transcript, { profiles: voiceProfiles() });
+      if (names.clusters?.length) S.tracker.reseed(names.clusters);
+      save(m);
+      send({ type: 'sync', segments: m.transcript.map(({ emb, ...seg }) => seg) });
+    } catch (e) { console.error(`live speaker cleanup failed: ${e.message}`); }
   };
   const cleanup = () => {
     S.timers.forEach(clearInterval); S.timers = [];
@@ -733,7 +749,7 @@ function createSession(m, { lang, diarizeMic }) {
         // Transcript text is private: debug logs show only lengths unless you explicitly ask for text with MR_DEBUG_TEXT=1.
         if (DEBUG) console.log(`[stt] ch${ch} ${p.start.toFixed(1)}s ${drop ? 'DROPPED ' : ''}${process.env.MR_DEBUG_TEXT ? JSON.stringify(text) : `${text.length} chars`}`);
         if (drop) continue;
-        const base = { start: Math.round((seg.start + p.start) * 10) / 10, dur: Math.round(d * 10) / 10, text };
+        const base = { start: Math.round((seg.start + p.start) * 10) / 10, dur: Math.round(d * 10) / 10, text, ...(Number.isFinite(seg.snr) ? { snr: Math.round(seg.snr * 10) / 10 } : {}) };
         if (emb && S.tracker) {
           const noisy = (seg.snr ?? 99) < 10; // speech barely above the room's noise floor: embeddings are less trustworthy
           const a = S.tracker.assign(emb, d, { noisy });
