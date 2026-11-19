@@ -1,0 +1,1 @@
+{ "name": "sharp", "version": "0.0.0-stub", "main": "index.js", "description": "Stub: image processing is not used (speech only); avoids shipping per-platform native binaries." }

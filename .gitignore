@@ -1,0 +1,10 @@
+node_modules/
+data/
+.env
+.DS_Store
+dist/
+dist-*/
+release/
+*.log
+.claude/
+build/node/

@@ -1,0 +1,155 @@
+{
+  "name": "meeting-recorder",
+  "version": "1.0.0",
+  "description": "Realtime meeting recorder, transcriber and summarizer for Google Meet, Zoom, Teams and any other browser or desktop call",
+  "type": "module",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "desktop": "electron .",
+    "dist:mac": "node scripts/fetch-node.mjs mac-arm64 && node scripts/fetch-sherpa.mjs mac-arm64 && node scripts/fetch-llama.mjs mac-arm64 && electron-builder --mac",
+    "dist:win": "node scripts/fetch-node.mjs win-x64 && node scripts/fetch-sherpa.mjs win-x64 && node scripts/fetch-llama.mjs win-x64 && electron-builder --win",
+    "dist": "node scripts/fetch-node.mjs mac-arm64 win-x64 && node scripts/fetch-sherpa.mjs mac-arm64 win-x64 && node scripts/fetch-llama.mjs mac-arm64 win-x64 && electron-builder --mac --win"
+  },
+  "engines": {
+    "node": ">=20.6"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^4.3.2",
+    "express": "^4.21.2",
+    "node-llama-cpp": "^3.22.3",
+    "sherpa-onnx-node": "^2.0.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0"
+  },
+  "author": "Meeting Recorder",
+  "build": {
+    "appId": "com.meetingrecorder.app",
+    "productName": "Meeting Recorder",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "server.js",
+      "vault.js",
+      "local.js",
+      "local-worker.js",
+      "llm.js",
+      "llm-worker.js",
+      "builtin-llm.js",
+      "speaker-worker.js",
+      "speakers.js",
+      "public/**",
+      "electron/**",
+      "package.json",
+      "!dist/**",
+      "!dist-*/**",
+      "!release/**",
+      "!build/**",
+      "!scripts/**",
+      "!stubs/**",
+      "!README.md",
+      "!.env",
+      "!.env.*",
+      "!data/**",
+      "!.github/**",
+      "!.gitignore",
+      "!.npmrc",
+      "!.DS_Store",
+      "!node_modules/onnxruntime-node/bin/napi-v6/linux/**"
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Meeting Recorder records and transcribes your microphone during meetings.",
+        "NSScreenCaptureUsageDescription": "Meeting Recorder captures meeting audio from your screen or window share."
+      },
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v6/win32/**",
+        "!node_modules/sherpa-onnx-win-*/**",
+        "!node_modules/sherpa-onnx-linux-*/**",
+        "!node_modules/sherpa-onnx-darwin-x64/**",
+        "!dist/**",
+        "!dist-*/**",
+        "!release/**",
+        "!build/**",
+        "!scripts/**",
+        "!stubs/**",
+        "!README.md",
+        "!.env",
+        "!.env.*",
+        "!data/**",
+        "!.github/**",
+        "!.gitignore",
+        "!.npmrc",
+        "!.DS_Store",
+        "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+        "!node_modules/@node-llama-cpp/!(mac-arm64-metal)/**"
+      ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "files": [
+        "!node_modules/onnxruntime-node/bin/napi-v6/darwin/**",
+        "!node_modules/onnxruntime-node/bin/napi-v6/win32/arm64/**",
+        "!node_modules/sherpa-onnx-darwin-*/**",
+        "!node_modules/sherpa-onnx-linux-*/**",
+        "!node_modules/sherpa-onnx-win-ia32/**",
+        "!node_modules/sherpa-onnx-win-arm64/**",
+        "!dist/**",
+        "!dist-*/**",
+        "!release/**",
+        "!build/**",
+        "!scripts/**",
+        "!stubs/**",
+        "!README.md",
+        "!.env",
+        "!.env.*",
+        "!data/**",
+        "!.github/**",
+        "!.gitignore",
+        "!.npmrc",
+        "!.DS_Store",
+        "!node_modules/onnxruntime-node/bin/napi-v6/linux/**",
+        "!node_modules/@node-llama-cpp/!(win-x64)/**"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "asar": false,
+    "extraResources": [
+      {
+        "from": "build/node/${os}-${arch}",
+        "to": "node"
+      }
+    ]
+  },
+  "overrides": {
+    "sharp": "file:./stubs/sharp"
+  }
+}
