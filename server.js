@@ -10,6 +10,7 @@ import { hardware, sttLadder, LocalSTT, Segmenter, isHallucination } from './loc
 import { SpeakerEngine, SpeakerTracker, splitUtterance, refineMeeting, speakerStats, voiceprintOf, toB64, fromB64, normalize } from './speakers.js';
 import { BuiltinLLM, recommendBuiltin } from './builtin-llm.js';
 import { resolveEngine, ollamaModels, pickInstalled, recommendLLM, pullModel, summarize, ask } from './llm.js';
+import { extractNotes, notesToSegments, MAX_NOTE_BYTES } from './notes.js';
 import { initVault, vaultInfo, ensureDir, readJSON, writeJSON, encryptTo, decryptRange, plainSize, appendEncrypted, storedSize } from './vault.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -110,8 +111,15 @@ const fmtTime = (s) => {
   const p = (n) => String(n).padStart(2, '0');
   return h ? `${h}:${p(mm)}:${p(ss)}` : `${p(mm)}:${p(ss)}`;
 };
-const transcriptText = (m) => m.transcript.map((t) => `[${fmtTime(t.start)}] ${t.speaker}${t.uncertain ? ' (?)' : ''}: ${t.text}`).join('\n');
-const listView = ({ transcript, ...rest }) => ({ ...rest, segments: transcript.length });
+const transcriptText = (m) => {
+  const lines = m.transcript.map((t) => t.imported
+    ? (t.speaker === 'Notes' ? t.text : `${t.speaker}: ${t.text}`) // imported notes have no real timestamps
+    : `[${fmtTime(t.start)}] ${t.speaker}${t.uncertain ? ' (?)' : ''}: ${t.text}`).join('\n');
+  // Notes the user attached to this meeting are extra context for summaries and questions.
+  const extra = (m.notes || []).map((n) => `\n\n--- Notes added by the user (${n.file}) ---\n${n.text}`).join('');
+  return lines + extra;
+};
+const listView = ({ transcript, notes, ...rest }) => ({ ...rest, segments: transcript.length, noteCount: notes?.length || 0 });
 
 // What the browser sees: no voiceprints, plus per-speaker characterization.
 const publicMeeting = (m) => ({
@@ -578,6 +586,52 @@ app.get('/api/meetings/:id/audio', wrap((req, res) => {
   stream.on('error', () => res.destroy());
   res.on('close', () => stream.destroy());
   stream.pipe(res);
+}));
+
+/* ------------------------------------------------------------ import notes */
+
+const noteUpload = express.raw({ type: () => true, limit: MAX_NOTE_BYTES + 1024 });
+const uploadName = (req) => String(req.query.filename || '').slice(0, 200);
+
+// Option 1: a notes file becomes a new meeting (transcript lines, summary, search, Ask, export all work on it).
+app.post('/api/import/notes', noteUpload, wrap(async (req, res) => {
+  const file = uploadName(req);
+  const { text, truncated, type } = await extractNotes(req.body, file);
+  const segs = notesToSegments(text);
+  if (!segs.length) throw Object.assign(new Error('No text found in this file.'), { status: 400 });
+  const last = segs.at(-1);
+  const now = new Date().toISOString();
+  const m = {
+    id: crypto.randomUUID(),
+    title: String(req.query.title || '').trim().slice(0, 200) || file.replace(/\.[^.]+$/, '').slice(0, 200) || `Notes ${new Date().toLocaleString()}`,
+    platform: 'notes', createdAt: now, endedAt: now, durationSec: last.start + last.dur,
+    status: 'ended', hasAudio: false, transcript: segs, summary: null,
+    importedFrom: { file, type, truncated },
+  };
+  meetings.set(m.id, m);
+  save(m);
+  console.log(`[notes] imported ${type} (${segs.length} lines)`); // never the file name or its text
+  res.status(201).json(publicMeeting(m));
+}));
+
+// Option 2: attach a notes file to a meeting you already have; its text joins the context for summaries and "Ask".
+app.post('/api/meetings/:id/notes', noteUpload, wrap(async (req, res) => {
+  const m = getMeeting(req);
+  const file = uploadName(req) || 'notes';
+  const { text, truncated, type } = await extractNotes(req.body, file);
+  m.notes = [...(m.notes || []), { id: crypto.randomUUID(), file, type, text, truncated, addedAt: new Date().toISOString() }];
+  m.summary = m.summary ? { ...m.summary, stale: true } : m.summary; // the summary predates these notes
+  save(m);
+  console.log(`[notes] attached ${type} to a meeting`);
+  res.status(201).json(publicMeeting(m));
+}));
+
+app.delete('/api/meetings/:id/notes/:noteId', wrap((req, res) => {
+  const m = getMeeting(req);
+  m.notes = (m.notes || []).filter((n) => n.id !== req.params.noteId);
+  if (m.summary) m.summary = { ...m.summary, stale: true };
+  save(m);
+  res.json(publicMeeting(m));
 }));
 
 app.post('/api/meetings/:id/summarize', wrap(async (req, res) => {

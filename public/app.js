@@ -52,7 +52,7 @@ async function refreshList() {
     onclick: () => openMeeting(m.id),
   },
   h('div', { class: 't' }, m.title),
-  h('div', { class: 'm' }, `${fmtDate(m.createdAt)} · ${m.status === 'recording' ? (m.localBot ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : 'recording…') : m.status === 'bot' ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : fmt(m.durationSec)}`))));
+  h('div', { class: 'm' }, `${fmtDate(m.createdAt)} · ${m.status === 'recording' ? (m.localBot ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : 'recording…') : m.status === 'bot' ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : m.platform === 'notes' ? 'imported notes' : fmt(m.durationSec)}`))));
   if (!list.length) ul.append(h('li', { class: 'm' }, q ? 'No matches' : 'No meetings yet'));
 }
 
@@ -225,7 +225,8 @@ function showRecorder() {
       h('div', { class: 'notice' }, 'Tell participants they are being recorded. Many places legally require everyone\'s consent.'),
       errBox),
     h('div', { id: 'live' }),
-    botCard()));
+    botCard(),
+    importCard()));
 
   async function start() {
     startBtn.disabled = true;
@@ -284,6 +285,59 @@ function botCard() {
       ? 'A guest joins your link from this computer, listens, and transcribes live on this device. Nothing leaves your computer and no account or key is needed. It shows up as a visible participant, and the host may need to admit it. It cannot join meetings that require signing in.'
       : 'The bot joins as a visible participant (you may need to admit it from the waiting room). The transcript and recording appear here after the meeting ends.'),
     h('div', { class: 'row' }, url, name, btn), err, acct);
+}
+
+/* ------------------------------------------------------------ import notes */
+
+const NOTE_ACCEPT = '.pdf,.docx,.md,.markdown,.txt';
+async function uploadNotes(url, file) {
+  if (file.size > 25 * 1024 * 1024) throw new Error('The file is larger than 25 MB.');
+  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: await file.arrayBuffer() });
+  const data = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+const pickFile = (onFile) => {
+  const input = h('input', { type: 'file', accept: NOTE_ACCEPT, style: 'display:none', onchange: () => { const f = input.files[0]; input.value = ''; if (f) onFile(f); } });
+  document.body.append(input);
+  input.click();
+  setTimeout(() => input.remove(), 60000);
+};
+
+function importCard() {
+  const err = h('div');
+  const existing = h('select', { title: 'Meeting to add the notes to' }, h('option', { value: '' }, 'Choose a meeting…'));
+  api('/api/meetings').then((list) => list.filter((m) => m.status !== 'recording')
+    .forEach((m) => existing.append(h('option', { value: m.id }, `${m.title} · ${fmtDate(m.createdAt)}`)))).catch(() => {});
+  const fail = (e) => err.replaceChildren(h('div', { class: 'notice' }, e.message));
+  const busy = (btn, on) => { btn.disabled = on; };
+
+  const asNew = h('button', { class: 'primary', onclick: () => pickFile(async (f) => {
+    err.replaceChildren(); busy(asNew, true);
+    try {
+      const m = await uploadNotes(`/api/import/notes?filename=${encodeURIComponent(f.name)}`, f);
+      await refreshList(); openMeeting(m.id, { autoSummarize: config.ai });
+    } catch (e) { fail(e); } finally { busy(asNew, false); }
+  }) }, 'Import as a new meeting…');
+
+  const addTo = h('button', { onclick: () => {
+    if (!existing.value) { fail(new Error('Choose the meeting to add the notes to first.')); return; }
+    pickFile(async (f) => {
+      err.replaceChildren(); busy(addTo, true);
+      try {
+        await uploadNotes(`/api/meetings/${existing.value}/notes?filename=${encodeURIComponent(f.name)}`, f);
+        await refreshList(); openMeeting(existing.value);
+      } catch (e) { fail(e); } finally { busy(addTo, false); }
+    });
+  } }, 'Add notes file…');
+
+  return h('div', { class: 'card', style: 'margin-top:16px' },
+    h('h3', { style: 'margin-top:0' }, 'Import meeting notes'),
+    h('p', { class: 'muted' }, 'Already have notes from a meeting? Import a .pdf, .docx, .md or .txt file. It is read on this computer only; nothing is uploaded.'),
+    h('div', { class: 'row' }, h('b', {}, '1. New meeting'), h('span', { class: 'muted grow' }, 'The notes become a meeting you can summarize, search and ask questions about.'), asNew),
+    h('div', { class: 'row', style: 'margin-top:12px' }, h('b', {}, '2. Existing meeting'), h('span', { class: 'muted' }, 'Add notes to a meeting you recorded:'), existing, addTo),
+    h('div', { class: 'muted', style: 'margin-top:8px' }, 'Tip: lines like “Priya: we agreed to ship Friday” keep Priya as the speaker. PDFs must contain text (scans are not read).'),
+    err);
 }
 
 const BOT_LABELS = {
@@ -619,12 +673,27 @@ async function openMeeting(id, { autoSummarize = false } = {}) {
   const tabBtn = (key, label) => h('button', { class: tab === key ? 'on' : '', onclick: () => { tab = key; draw(); } }, label);
 
   function draw() {
-    drawCard();
+    drawCard(); drawNotes();
     tabs.replaceChildren(tabBtn('summary', 'Summary'), tabBtn('transcript', 'Transcript'), tabBtn('ask', 'Ask'));
     body.replaceChildren(tab === 'summary' ? summaryView() : tab === 'transcript' ? transcriptView() : askView());
   }
 
   const cardHolder = h('div');
+  const notesHolder = h('div');
+  function drawNotes() {
+    const notes = m.notes || [];
+    if (m.status === 'bot' || (m.status === 'recording')) { notesHolder.replaceChildren(); return; }
+    const add = h('button', { title: 'Attach a .pdf, .docx, .md or .txt file of notes to this meeting', onclick: () => pickFile(async (f) => {
+      add.disabled = true;
+      try { m = await uploadNotes(`/api/meetings/${id}/notes?filename=${encodeURIComponent(f.name)}`, f); draw(); refreshList(); }
+      catch (e) { alert(e.message); add.disabled = false; }
+    }) }, 'Add notes file…');
+    notesHolder.replaceChildren(h('div', { class: 'row', style: 'margin:8px 0' },
+      h('span', { class: 'muted' }, m.importedFrom ? `Imported from ${m.importedFrom.file}${m.importedFrom.truncated ? ' (very long: the end was left out)' : ''}.` : (notes.length ? 'Attached notes:' : '')),
+      ...notes.map((n) => h('span', { class: 'row', style: 'gap:4px' }, h('span', { title: `${n.text.length.toLocaleString()} characters` }, `📄 ${n.file}${n.truncated ? ' (shortened)' : ''}`),
+        h('button', { title: 'Remove these notes from this meeting', onclick: async () => { m = await api(`/api/meetings/${id}/notes/${n.id}`, { method: 'DELETE' }); draw(); } }, '✕'))),
+      h('span', { class: 'grow' }), add));
+  }
   const GENERIC = /^(Speaker \d+|You|Others)$/;
   function drawCard() {
     const sps = m.speakers || [];
@@ -663,6 +732,7 @@ async function openMeeting(id, { autoSummarize = false } = {}) {
     if (!s) return h('div', {}, h('p', { class: 'muted' }, m.transcript.length ? 'No summary yet.' : 'No transcript to summarize.'),
       h('button', { class: 'primary', disabled: m.transcript.length ? null : 'disabled', onclick: summarize }, 'Generate summary'));
     return h('div', {},
+      s.stale ? h('div', { class: 'notice row' }, h('span', { class: 'grow' }, 'Notes were added or removed after this summary was written.'), h('button', { onclick: summarize }, 'Regenerate now')) : null,
       h('p', {}, s.summary),
       s.topics?.length ? [h('h2', {}, 'Topics'), h('div', { class: 'chips' }, s.topics.map((t) => h('span', { class: 'chip' }, t)))] : null,
       s.decisions?.length ? [h('h2', {}, 'Decisions'), h('ul', { class: 'bul' }, s.decisions.map((d) => h('li', {}, d)))] : null,
@@ -738,7 +808,8 @@ async function openMeeting(id, { autoSummarize = false } = {}) {
       h('button', { onclick: async (e) => { e.target.disabled = true; try { await api(`/api/meetings/${id}/leave`, { method: 'POST' }); } catch (err) { alert(err.message); e.target.disabled = false; } } }, 'Make bot leave')) : null,
     m.botError ? h('div', { class: 'notice' }, m.botError) : null,
     m.interrupted ? h('div', { class: 'notice' }, '⚠ This recording was cut off (the app, computer or connection stopped before Stop was pressed). Everything captured up to that point was recovered', m.audioPartial ? '; the audio may end abruptly.' : '.') : null,
-    m.hasAudio ? audio : (m.status === 'bot' ? null : h('div', { class: 'muted' }, 'No audio saved.')),
+    m.hasAudio ? audio : (m.status === 'bot' || m.platform === 'notes' ? null : h('div', { class: 'muted' }, 'No audio saved.')),
+    notesHolder,
     cardHolder, tabs, body));
   draw();
   if (autoSummarize && !m.summary && m.transcript.length) summarize();

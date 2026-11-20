@@ -81,6 +81,15 @@ Paste a Meet, Zoom or Teams link under **Send a bot to the meeting**. A private 
 - **Honest limits:** it drives the meeting websites like a person would, and those sites change. Selectors are text-based and best effort. Meetings that require signing in (some company Meet/Teams/Zoom settings) cannot be joined as a guest. Zoom's web client and Teams are the least tested. It was verified end to end against a simulated meeting (waiting room, WebRTC audio, call end), **not** against live Meet, Zoom or Teams calls.
 - **Browser version (`npm start`)** has no built-in bot. It can still use Recall.ai (paid cloud bot) if you add `RECALL_API_KEY`.
 
+## Import meeting notes
+
+On the **New recording** screen, **Import meeting notes** accepts `.pdf`, `.docx`, `.md` and `.txt` files (up to 25 MB):
+
+1. **New meeting**: the notes become a meeting, so summary, search, Ask and export all work. Lines such as `Priya: we agreed to ship Friday` keep Priya as the speaker; other lines show as "Notes".
+2. **Existing meeting**: attach a notes file to a meeting you recorded. Its text is added to what the summary and Ask see (an older summary is flagged so you can regenerate it). Remove it any time with the ✕.
+
+Files are read in memory on this computer and never sent anywhere. PDFs must contain real text; scanned pages (pictures) are not read.
+
 ## If something goes wrong mid-meeting
 
 Recordings are written to disk **while** you record, so a crash, force-quit, sleep or dead battery loses seconds, not the meeting.
