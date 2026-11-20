@@ -4,6 +4,8 @@ This app records a meeting, writes down what was said, tells you who said it, an
 
 > The first time you use it, the app downloads a few "models" (the files that do the listening and writing). This happens once and needs internet. After that it works offline.
 
+> **About the screenshots.** They use the first 12 minutes of a real public recording, the *Full Circle Podcast* Camp 11 panel discussion (Hacker Public Radio episode 1064, licensed [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/)), fed into the app, plus a made-up sample meeting. Your screens will show your own meetings. "Speaker 1", "Speaker 2" and so on are the names the app gives voices until you rename them.
+
 ### What you need
 
 - A Mac with Apple Silicon (M1 or newer, macOS 13+) or a Windows 10/11 PC.
@@ -16,6 +18,16 @@ When you open the app you will see a **Getting started** checklist at the top of
 
 1. **Speech model:** press **Download**. This lets the app turn speech into text. It can take a few minutes. You can keep using the app while it downloads.
 2. **Summary model:** press **Download**. This writes the summary, decisions and action items. It is a bigger file (2.5 GB, or 18.6 GB on computers with 24 GB+ of memory). You can skip it and still record; you can summarize later.
+
+![The Getting started checklist at the top of the New recording screen](img/01-checklist.jpg)
+*The checklist. A tick means that step is done. Here the speech model and summary model are ready.*
+
+### Take a quick tour first
+
+Press **Open sample** in the checklist (or **Open sample** under step 4). It opens a made-up meeting so you can see every screen before recording anything real. Nothing in it is real, and you can delete it like any meeting.
+
+![The sample meeting with its speakers card and summary](img/03-sample-meeting.jpg)
+*The sample meeting. The coloured bars show how much each person spoke. The summary below lists decisions and action items.*
 
 ## Step 2: Choose what to record
 
@@ -60,6 +72,9 @@ In **Send a bot to the meeting**, paste the Meet, Zoom or Teams link and press *
 
 Before an important meeting, press **Test audio** next to the audio input. It listens for 6 seconds and shows a live level bar. If it hears nothing, it tells you what to check.
 
+![The audio test showing a moving level bar and the message Audio is coming in](img/02-audio-test.jpg)
+*A passing test: the bar moved and the app says audio is coming in. On a Mac, run it again with BlackHole selected while the call plays.*
+
 ## Step 4: Record
 
 1. Type a title (optional).
@@ -70,6 +85,20 @@ Tell everyone they are being recorded. Many places legally require consent.
 
 ## Step 5: Read the results
 
+Here is a real example: a 12-minute excerpt of the panel recording.
+
+![Speakers card for the HPR panel excerpt, with six speakers, talk time and unsure counts](img/04-speakers.jpg)
+*The Speakers card. For each voice: talk time, share, number of turns, words, and how many lines the app was unsure about. Press **Rename** to give a voice a real name. For example, the voice that opens the episode could be renamed "Host".*
+
+![The Summary tab for the HPR panel excerpt](img/08-summary.jpg)
+*The Summary tab (written by the summary model on your computer): the main points, topics, and who did what.*
+
+![The Transcript tab with unsure lines marked](img/05-transcript.jpg)
+*The Transcript tab. Dotted underlines and the **? unsure** tag mark lines where the app could not tell who spoke. **Review unsure** jumps to the next one, and clicking a name lets you fix it.*
+
+![The Ask tab answering a question about the panel](img/09-ask.jpg)
+*The Ask tab. Here the question was "Who is on the panel and where is the discussion held?" The answer comes from the transcript, with a time you can check. Always check names against the transcript: spoken names can be misheard.*
+
 - **Summary:** the main points, decisions and action items with owners.
 - **Transcript:** click a time to jump to that moment in the audio. Lines marked **? unsure** are ones where the app could not tell who spoke. **Review unsure** jumps through them.
 - **Speakers:** press **Rename** to change "Speaker 2" to a real name. Your corrections are never overwritten.
@@ -79,6 +108,15 @@ Tell everyone they are being recorded. Many places legally require consent.
 ## Already have notes?
 
 On the New recording screen, **Import meeting notes** accepts `.pdf`, `.docx`, `.md` and `.txt` files. You can turn them into a new meeting, or attach them to a meeting you recorded so the summary and Ask can use them. Lines like `Priya: we agreed to ship Friday` keep Priya as the speaker. PDFs must contain real text (scans are not read).
+
+![The Import meeting notes card, below the bot box on the New recording screen](img/06-import-and-bot.jpg)
+*Both import options live in the **Import meeting notes** card. The bot box above it is option D from Step 2.*
+
+## Where to find this guide again
+
+Click **? Help & getting started** at the bottom of the left sidebar any time. From there, **Show the setup checklist** brings the checklist back.
+
+![The Help guide opened inside the app](img/07-help.jpg)
 
 ## Your privacy
 

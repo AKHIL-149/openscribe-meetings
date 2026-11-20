@@ -299,11 +299,12 @@ function startCard(runAudioTest) {
 
 // A very small Markdown renderer for the built-in guide (headings, lists, code, quotes, bold, links).
 function inlineMd(text) {
-  const out = []; const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g; let last = 0, m;
+  const out = []; const re = /(\*\*[^*]+\*\*|\*[^*\s][^*]*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g; let last = 0, m;
   while ((m = re.exec(text))) {
     if (m.index > last) out.push(text.slice(last, m.index));
     const t = m[0];
     if (t.startsWith('**')) out.push(h('b', {}, t.slice(2, -2)));
+    else if (t.startsWith('*')) out.push(h('i', {}, t.slice(1, -1)));
     else if (t.startsWith('`')) out.push(h('code', {}, t.slice(1, -1)));
     else { const [, label, href] = /\[([^\]]+)\]\(([^)]+)\)/.exec(t); out.push(/^https?:/.test(href) ? h('a', { href, target: '_blank', rel: 'noopener' }, label) : label); }
     last = m.index + t.length;
@@ -324,8 +325,11 @@ function renderMd(md) {
       while (i < lines.length && /^(\d+\.|-)\s+/.test(lines[i])) { items.push(h('li', {}, ...inlineMd(lines[i].replace(/^(\d+\.|-)\s+/, '')))); i++; }
       root.append(h(ordered ? 'ol' : 'ul', {}, ...items)); continue;
     }
+    const img = /^!\[([^\]]*)\]\(([^)]+)\)\s*$/.exec(l);
+    if (img) { root.append(h('img', { class: 'helpimg', alt: img[1], src: /^(https?:|\/)/.test(img[2]) ? img[2] : `/${img[2]}` })); i++; continue; }
+    if (/^\*[^*].*\*$/.test(l)) { root.append(h('p', { class: 'muted cap' }, ...inlineMd(l.slice(1, -1)))); i++; continue; }
     if (!l.trim()) { i++; continue; }
-    const para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|```|>|\d+\.\s|-\s)/.test(lines[i])) para.push(lines[i++]);
+    const para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|```|>|\d+\.\s|-\s|!\[|\*[^*].*\*$)/.test(lines[i])) para.push(lines[i++]);
     root.append(h('p', {}, ...inlineMd(para.join(' '))));
   }
   return root;

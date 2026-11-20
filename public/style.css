@@ -94,3 +94,6 @@ dialog.card { max-height: 90vh; overflow: auto; }
 .help pre, .help code { background: var(--chip); border-radius: 6px; font-size: 13px; }
 .help code { padding: 1px 5px; } .help pre { padding: 10px 12px; overflow: auto; }
 .help ol, .help ul { padding-left: 22px; } .help li { margin: 5px 0; }
+.helpimg { display:block; max-width:100%; border:1px solid var(--line); border-radius:10px; margin:14px 0 4px; }
+.help .cap { font-size:13px; margin:0 0 16px; }
+.ok div { font-weight: 400; color: var(--muted); }
