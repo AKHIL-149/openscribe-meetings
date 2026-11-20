@@ -15,6 +15,24 @@ No account, no subscription, and by default no audio or text leaves your compute
 
 **No API key is required for anything.** Deepgram, Claude and Recall.ai are optional upgrades you can ignore.
 
+## System requirements
+
+| | Minimum (works, slower) | Recommended |
+| --- | --- | --- |
+| **Operating system** | macOS 13 (Ventura) or newer on **Apple Silicon (M1 or newer)**, or Windows 10/11 **64-bit** | The latest macOS / Windows 11 |
+| **Processor** | 4 cores (uses the smaller Whisper models) | Apple Silicon with 8+ cores, or a 12+ core PC (uses Whisper large-v3-turbo) |
+| **Memory (RAM)** | **8 GB.** The bundled 4B summary model needs at least 6 GB free of what the computer has | **16 GB** for the best speech model; **24 GB or more** for the best summary model (Qwen3 30B-A3B) |
+| **Free disk space** | About **5 GB**: app ≈ 0.7 GB installed, speech model 40–900 MB, speaker model 44 MB, 4B summary model 2.5 GB | About **25 GB** if you use the 30B summary model (18.6 GB download) |
+| **Per recording** | About **1 MB of audio per minute** (≈ 60 MB per hour), stored encrypted | |
+| **Internet** | Only for the one-time model downloads and for the guest bot to reach the meeting. Transcription, speaker recognition and summaries then run offline | |
+| **Audio input** | A microphone, or on **macOS** a free loopback device ([BlackHole](https://existential.audio/blackhole/)) to record the other side of a call. Windows captures system audio itself | |
+
+Not supported: Intel Macs for on-device transcription (the speech runtime has no Intel-Mac build; they can still use a Deepgram key), 32-bit Windows, and Linux installers (Linux can run the browser version, see below, with Node.js 20.6 or newer).
+
+How the app adapts: it measures your RAM and cores on first run, starts with the best speech model the machine should keep up with, and steps down by itself if it falls behind during a call. The summary model is picked by RAM (30B at 24 GB+, 4B at 6 GB+, otherwise summaries need Ollama or a Claude key).
+
+**What these numbers are based on.** The model choices come from the app's own rules (`local.js`, `builtin-llm.js`). The speed and quality results in this README were measured on one machine, a MacBook Pro with an M1 Max and 64 GB of RAM. The minimum row is the app's cut-off, not something I have run on an 8 GB or 4-core computer, and the Windows installer has been built but never run, so treat both as unverified.
+
 ## Who is speaking (speaker recognition)
 
 Every line of the transcript is labelled with *who* said it, on your computer, with no cloud service.
@@ -29,11 +47,21 @@ Every line of the transcript is labelled with *who* said it, on your computer, w
 
 **Real-recording result.** On a 41-minute CC-BY-SA panel recording (a host plus five panelists, room microphone, MP3), the app found 5 speakers with plausible talk shares (32/23/21/12/12%) and marked 21% of lines "unsure". It did not find all of the voices separately, so two similar voices were probably merged, and there is no hand-checked ground truth. An earlier version split this recording into 82 speakers; the end-of-meeting cleanup now decides the number of people from the data (and re-runs every ~15 lines during the meeting), because real voices score much lower than clean ones. Expect to rename or fix a few lines.
 
+**Same recording, three ways in** (HPR1064 panel, 41 minutes, same code):
+
+| How the audio reached the app | Speakers found | Lines marked unsure |
+| --- | --- | --- |
+| Digital file fed in directly | 5 | 21% |
+| **macOS loopback (BlackHole)**, the recommended way to record a call | **6** (24/23/22/13/12/6%) | 23% |
+| Played through speakers, recorded by the MacBook microphone | about 2 for the panel part | most of its lines |
+
+Clean digital audio works; audio picked up by a room microphone does not separate people well, because echo and room sound blur each voice's fingerprint. For calls on macOS use the loopback route. There is no hand-checked ground truth for any of these, so the speaker counts show separation, not measured accuracy.
+
 Clean-audio test (measured with 4 distinct synthetic voices, which are cleaner than real life): 20/20 lines labelled correctly in a conversation with short replies, 0 dB noise, instant handovers and real cross-talk, every "certain" label correct, both cross-talk moments flagged. Real people and real rooms will be harder; expect more "unsure" lines, which is the intended behaviour. Limits: it does not separate two people speaking *at the same moment* (it flags the line instead); a person who speaks once for a few seconds may be folded into a similar-sounding speaker (flagged); and very similar voices can be confused.
 
 ## Install the desktop app
 
-Installers are built into `dist-3/` (earlier builds are in `dist/` and `dist-2/`):
+Installers are built into `dist-3/` (earlier builds are in `dist/` and `dist-2/`). These were built **before** the latest changes (improved speaker recognition, the sign-in option, privacy hardening and notes import), so run `npm run dist:mac` / `npm run dist:win` for a build that includes them, or start from source with `npm run desktop`:
 
 - **macOS (Apple Silicon M1 and newer):** `Meeting Recorder-1.0.0-arm64.dmg`
 - **Windows 10/11 (64-bit):** `Meeting Recorder Setup 1.0.0.exe`
@@ -53,9 +81,10 @@ Unsigned builds show a warning the first time (macOS: right-click → Open; Wind
 Click **New recording → Start recording**.
 
 - **Windows:** the app captures everything you hear (any app, any browser) automatically.
-- **macOS:** Electron cannot capture system audio. Pick one:
+- **macOS:** Electron cannot capture system audio, and the "Share This Window" screen picker brings no sound (it can also fail with "Timeout starting video source"). Pick one:
   - use the **meeting bot** (below), or
-  - install a free loopback device such as [BlackHole](https://existential.audio/blackhole/), route your speakers through it, untick *Capture meeting audio from a tab/screen*, and choose that device under *audio input*. (The whole mixed input then shows as "You".)
+  - install a free loopback device such as [BlackHole](https://existential.audio/blackhole/) (`brew install --cask blackhole-2ch`, then restart the audio service with `sudo killall coreaudiod` or reboot), set your Mac's sound **output** to *BlackHole 2ch*, untick *Capture meeting audio from a tab/screen*, tick *Several people share my microphone*, and choose *BlackHole 2ch* under *audio input*. The app then labels each person separately. You will not hear the call while output is on BlackHole; for that, create a Multi-Output Device in Audio MIDI Setup (speakers + BlackHole) and use it as output.
+  - Do not rely on the speakers-into-microphone route: it works for text but separates people badly (see the table above).
 - **In a browser (no install):** pick the Chrome tab with the meeting and tick *Share tab audio*.
 
 Use headphones to avoid echo. macOS asks for Microphone permission the first time.
@@ -150,6 +179,7 @@ Speech is cut into utterances at pauses (~0.8 s), so text appears a few seconds 
 
 - The speaker-recognition model (NVIDIA TitaNet-small) is downloaded from the sherpa-onnx release. Its code is Apache-2.0, but **check the model's own license** (I could not confirm it for the *small* variant) before commercial distribution. The segmentation model is MIT.
 - Transcription accuracy depends on audio quality and the model tier; a slower computer gets a smaller model.
+- Speaker separation needs clean audio (a loopback device or the bot), not a room microphone.
 - Local summaries are only as good as your local model. Very long meetings are summarized in parts.
 - No accounts, sharing, or calendar auto-join.
 - Tell participants they're being recorded; many places legally require consent.
