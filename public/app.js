@@ -52,7 +52,7 @@ async function refreshList() {
     onclick: () => openMeeting(m.id),
   },
   h('div', { class: 't' }, m.title),
-  h('div', { class: 'm' }, `${fmtDate(m.createdAt)} · ${m.status === 'recording' ? (m.localBot ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : 'recording…') : m.status === 'bot' ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : m.platform === 'notes' ? 'imported notes' : fmt(m.durationSec)}`))));
+  h('div', { class: 'm' }, `${fmtDate(m.createdAt)} · ${m.status === 'recording' ? (m.localBot ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : 'recording…') : m.status === 'bot' ? `bot: ${(BOT_LABELS[m.botStatus] || m.botStatus).replace(/…$/, '')}` : m.platform === 'notes' ? 'imported notes' : m.sample ? 'sample' : fmt(m.durationSec)}`))));
   if (!list.length) ul.append(h('li', { class: 'm' }, q ? 'No matches' : 'No meetings yet'));
 }
 
@@ -178,6 +178,170 @@ async function loadConfig() {
 
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; }
 
+/* ------------------------------------------------- getting started & help */
+
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch { /* storage unavailable: the checklist just forgets */ } },
+};
+const IS_MAC = /Mac/.test(navigator.platform || '');
+const LOOPBACK = /blackhole|loopback|soundflower|vb-cable|cable output|multi-output/i;
+
+/** Listen to the chosen input for a few seconds, show a live level meter, and say what it heard. */
+async function audioTest(deviceId, out, btn) {
+  btn.disabled = true;
+  const meter = h('div', { class: 'meter' }, h('div'));
+  const msg = h('div', { class: 'muted', style: 'margin-top:6px' }, 'Listening for 6 seconds. Speak, or play something in your meeting app…');
+  out.replaceChildren(meter, msg);
+  let stream, ctx;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { deviceId: deviceId ? { exact: deviceId } : undefined, echoCancellation: false, noiseSuppression: false, autoGainControl: false } });
+    ctx = new AudioContext();
+    const an = ctx.createAnalyser(); an.fftSize = 1024;
+    ctx.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let peak = 0; const end = performance.now() + 6000;
+    await new Promise((done) => {
+      const tick = () => {
+        an.getFloatTimeDomainData(buf);
+        let sum = 0; for (const v of buf) sum += v * v;
+        const rms = Math.sqrt(sum / buf.length); peak = Math.max(peak, rms);
+        meter.firstChild.style.width = `${Math.min(100, Math.sqrt(rms) * 140)}%`;
+        performance.now() < end ? requestAnimationFrame(tick) : done();
+      };
+      tick();
+    });
+    const devs = await navigator.mediaDevices.enumerateDevices().catch(() => []);
+    const hasLoop = devs.some((d) => d.kind === 'audioinput' && LOOPBACK.test(d.label));
+    const label = devs.find((d) => d.deviceId === deviceId)?.label || '';
+    if (peak >= 0.01) {
+      ls.set('mr.audioOk', '1'); window.dispatchEvent(new Event('mr-gs'));
+      msg.className = 'ok'; msg.textContent = '✓ Audio is coming in. This input works.';
+      if (IS_MAC && !LOOPBACK.test(label)) msg.append(h('div', { class: 'muted' }, hasLoop
+        ? 'To record the other side of a call, choose the BlackHole input above and run this test again while the call plays.'
+        : 'This is a microphone. To record the other side of a call on a Mac you also need a free loopback device (BlackHole): open Help for the steps, or use the meeting bot.'));
+    } else {
+      msg.className = 'notice'; msg.style.margin = '6px 0 0';
+      msg.textContent = LOOPBACK.test(label)
+        ? 'Nothing is playing into this device. Set your Mac\'s sound output to “BlackHole 2ch” (or a Multi-Output Device that includes it), play something, and test again. You will not hear it while output is on BlackHole alone.'
+        : 'No sound was heard. Check that the right input is chosen above, that your microphone is not muted, and that you are speaking or playing audio. If it still fails, check the app\'s microphone permission in your system settings.';
+    }
+  } catch (e) {
+    msg.className = 'notice'; msg.style.margin = '6px 0 0';
+    msg.textContent = e.name === 'NotAllowedError' ? 'Microphone access is blocked. Allow it for this app in your system privacy settings (macOS: System Settings → Privacy & Security → Microphone), then test again.'
+      : /NotFound|Overconstrained/.test(e.name) ? 'That input was not found. Pick another one above (it may have been unplugged).'
+      : `Could not test the input: ${e.message}`;
+  } finally {
+    stream?.getTracks().forEach((t) => t.stop()); ctx?.close().catch(() => {});
+    btn.disabled = false;
+  }
+}
+
+/** The "Getting started" checklist: ticks itself off as the real state changes. */
+function startCard(runAudioTest) {
+  if (ls.get('mr.gs.hide')) return h('div');
+  const box = h('div');
+  let timer = null, sttAsked = false, llmAsked = false;
+  const redraw = () => { clearTimeout(timer); draw(); };
+  window.addEventListener('mr-gs', redraw);
+
+  async function draw() {
+    if (!box.isConnected && box.dataset.drawn) { window.removeEventListener('mr-gs', redraw); return; } // left this screen
+    box.dataset.drawn = '1';
+    let st, list;
+    try { [st, list] = await Promise.all([api('/api/local/status'), api('/api/meetings')]); }
+    catch { timer = setTimeout(draw, 4000); return; }
+    const e = st.stt.engine, b = st.llm.builtin;
+    const sttBusy = ['downloading', 'loading'].includes(e.state) || sttAsked && e.state === 'idle' && !st.stt.cached;
+    const sttDone = st.stt.provider === 'deepgram' || (st.stt.cached && (!st.speaker.enabled || st.speaker.cached));
+    const llmBusy = b.state === 'downloading' || llmAsked && b.state === 'idle' && !config.ai;
+    if (!config.ai && (b.installed || st.llm.chosen)) await loadConfig();
+    const steps = [
+      { done: sttDone, title: 'Speech model', busy: sttBusy,
+        desc: sttDone ? `${st.stt.provider === 'deepgram' ? 'Using Deepgram (cloud).' : `${st.stt.chosen.label} is on this computer.`}`
+          : sttBusy ? `Downloading… ${e.state === 'downloading' ? Math.round(e.progress * 100) + '%' : 'getting ready'}`
+          : e.error ? `Problem: ${e.error}` : `Turns speech into text, on this computer. One-time download (about ${st.stt.chosen.approxMB} MB).`,
+        action: sttDone || sttBusy ? null : h('button', { class: 'primary', onclick: async () => { sttAsked = true; await api('/api/local/stt/load', { method: 'POST', body: {} }).catch(() => {}); redraw(); } }, 'Download') },
+      { done: config.ai, title: 'Summary model', busy: llmBusy,
+        desc: config.ai ? `Ready (${config.aiModel}).`
+          : llmBusy ? `Downloading… ${Math.round((b.progress || 0) * 100)}%`
+          : b.state === 'error' ? `Problem: ${b.error}`
+          : b.recommended ? `Writes summaries, decisions and action items, on this computer. One-time download (${b.recommended.sizeGB} GB). You can skip this and still record.`
+          : 'This computer has too little memory for the built-in model. Use Ollama or add a Claude key in Settings, or skip summaries.',
+        action: config.ai || llmBusy || !b.recommended ? null : h('button', { class: 'primary', onclick: async () => {
+          llmAsked = true; try { await api('/api/local/llm/builtin/download', { method: 'POST' }); } catch (err) { alert(err.message); } redraw(); } }, 'Download') },
+      { done: ls.get('mr.audioOk') === '1', title: 'Check your audio',
+        desc: 'Make sure the app can hear what you want recorded. Takes 6 seconds.',
+        action: h('button', { onclick: runAudioTest }, 'Test audio') },
+      { done: Boolean(ls.get('mr.sampleSeen')), title: 'Look around a sample meeting',
+        desc: 'A made-up meeting with a summary, speakers and action items, so you can explore before recording anything.',
+        action: h('button', { onclick: async (ev) => {
+          ev.target.disabled = true;
+          try { const m = await api('/api/sample', { method: 'POST' }); ls.set('mr.sampleSeen', '1'); await refreshList(); openMeeting(m.id); } catch (err) { alert(err.message); ev.target.disabled = false; }
+        } }, 'Open sample') },
+      { done: list.some((m) => !m.sample && m.platform !== 'notes'), title: 'Make your first recording',
+        desc: 'Pick an audio input above, type a title, and press Start recording. Press Stop & save when done.', action: null },
+    ];
+    const n = steps.filter((x) => x.done).length;
+    box.replaceChildren(h('div', { class: 'card gs' },
+      h('div', { class: 'row' }, h('b', {}, n === steps.length ? '✓ You are all set' : `Getting started · ${n} of ${steps.length} done`), h('span', { class: 'grow' }),
+        h('button', { onclick: showHelp }, 'Help guide'),
+        h('button', { title: 'Hide this checklist (you can bring it back from Help)', onclick: () => { ls.set('mr.gs.hide', '1'); box.replaceChildren(); } }, 'Hide')),
+      ...steps.map((x) => h('div', { class: 'row gsrow' },
+        h('span', { class: `gsmark ${x.done ? 'done' : ''}` }, x.done ? '✓' : '○'),
+        h('div', { class: 'grow' }, h('b', {}, x.title), h('div', { class: 'muted' }, x.desc)),
+        x.action))));
+    if (sttBusy || llmBusy) timer = setTimeout(draw, 2000);
+  }
+  setTimeout(draw, 0);
+  return box;
+}
+
+// A very small Markdown renderer for the built-in guide (headings, lists, code, quotes, bold, links).
+function inlineMd(text) {
+  const out = []; const re = /(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g; let last = 0, m;
+  while ((m = re.exec(text))) {
+    if (m.index > last) out.push(text.slice(last, m.index));
+    const t = m[0];
+    if (t.startsWith('**')) out.push(h('b', {}, t.slice(2, -2)));
+    else if (t.startsWith('`')) out.push(h('code', {}, t.slice(1, -1)));
+    else { const [, label, href] = /\[([^\]]+)\]\(([^)]+)\)/.exec(t); out.push(/^https?:/.test(href) ? h('a', { href, target: '_blank', rel: 'noopener' }, label) : label); }
+    last = m.index + t.length;
+  }
+  if (last < text.length) out.push(text.slice(last));
+  return out;
+}
+function renderMd(md) {
+  const root = h('div', { class: 'help' }); const lines = md.replace(/\r/g, '').split('\n'); let i = 0;
+  while (i < lines.length) {
+    const l = lines[i];
+    if (/^```/.test(l)) { const code = []; i++; while (i < lines.length && !/^```/.test(lines[i])) code.push(lines[i++]); i++; root.append(h('pre', {}, code.join('\n'))); continue; }
+    const hd = /^(#{1,3})\s+(.*)$/.exec(l);
+    if (hd) { root.append(h(`h${hd[1].length + 1}`, {}, ...inlineMd(hd[2]))); i++; continue; }
+    if (/^>\s?/.test(l)) { const q = []; while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, '')); root.append(h('div', { class: 'notice' }, ...inlineMd(q.join(' ')))); continue; }
+    if (/^(\d+\.|-)\s+/.test(l)) {
+      const ordered = /^\d+\./.test(l); const items = [];
+      while (i < lines.length && /^(\d+\.|-)\s+/.test(lines[i])) { items.push(h('li', {}, ...inlineMd(lines[i].replace(/^(\d+\.|-)\s+/, '')))); i++; }
+      root.append(h(ordered ? 'ol' : 'ul', {}, ...items)); continue;
+    }
+    if (!l.trim()) { i++; continue; }
+    const para = []; while (i < lines.length && lines[i].trim() && !/^(#{1,3}\s|```|>|\d+\.\s|-\s)/.test(lines[i])) para.push(lines[i++]);
+    root.append(h('p', {}, ...inlineMd(para.join(' '))));
+  }
+  return root;
+}
+
+async function showHelp() {
+  if (recording) return;
+  currentId = null; refreshList();
+  let md;
+  try { md = await (await fetch('/getting-started.md')).text(); } catch { md = '# Help\n\nThe guide could not be loaded.'; }
+  main.replaceChildren(h('div', { class: 'wrap' },
+    h('div', { class: 'row' }, h('span', { class: 'grow' }), h('button', { onclick: () => { ls.set('mr.gs.hide', null); showRecorder(); } }, 'Show the setup checklist'), h('button', { class: 'primary', onclick: showRecorder }, 'New recording')),
+    renderMd(md)));
+}
+$('#help')?.addEventListener('click', showHelp);
+
 /* --------------------------------------------------------------- recorder */
 
 function showRecorder() {
@@ -196,6 +360,8 @@ function showRecorder() {
     ds.filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId !== 'communications')
       .forEach((d, i) => device.append(h('option', { value: d.deviceId }, d.label || `Input ${i + 1}`)));
   }).catch(() => {});
+  const testOut = h('div');
+  const testBtn = h('button', { title: 'Listen to this input for 6 seconds and show a level meter', onclick: () => audioTest(device.value, testOut, testBtn) }, 'Test audio');
   const room = h('input', { type: 'checkbox', id: 'room' });
   platform.addEventListener('change', () => { room.checked = platform.value === 'other'; }); // in-person: everyone shares the mic
   const startBtn = h('button', { class: 'primary', onclick: () => start() }, '● Start recording');
@@ -208,10 +374,12 @@ function showRecorder() {
   main.replaceChildren(h('div', { class: 'wrap' },
     h('h1', {}, 'New recording'),
     h('p', { class: 'muted' }, 'Works with Google Meet, Zoom, Teams and anything else that plays audio in your browser or on your computer.'),
+    startCard(() => audioTest(device.value, testOut, testBtn)),
     h('div', { class: 'card' },
       h('div', { class: 'row' }, title, platform),
       h('div', { class: 'row', style: 'margin-top:12px' },
-        h('label', { class: 'row' }, useMic, 'Include audio input'), device),
+        h('label', { class: 'row' }, useMic, 'Include audio input'), device, testBtn),
+      testOut,
       h('div', { class: 'row', style: 'margin-top:8px' },
         h('label', { class: 'row', title: 'Tell the voices on your microphone apart (in-person meetings)' }, room, 'Several people share my microphone'),
         h('span', { class: 'muted' }, '(in-person)')),
@@ -808,7 +976,7 @@ async function openMeeting(id, { autoSummarize = false } = {}) {
       h('button', { onclick: async (e) => { e.target.disabled = true; try { await api(`/api/meetings/${id}/leave`, { method: 'POST' }); } catch (err) { alert(err.message); e.target.disabled = false; } } }, 'Make bot leave')) : null,
     m.botError ? h('div', { class: 'notice' }, m.botError) : null,
     m.interrupted ? h('div', { class: 'notice' }, '⚠ This recording was cut off (the app, computer or connection stopped before Stop was pressed). Everything captured up to that point was recovered', m.audioPartial ? '; the audio may end abruptly.' : '.') : null,
-    m.hasAudio ? audio : (m.status === 'bot' || m.platform === 'notes' ? null : h('div', { class: 'muted' }, 'No audio saved.')),
+    m.hasAudio ? audio : (m.status === 'bot' || m.platform === 'notes' || m.sample ? null : h('div', { class: 'muted' }, 'No audio saved.')),
     notesHolder,
     cardHolder, tabs, body));
   draw();

@@ -10,6 +10,7 @@ import { hardware, sttLadder, LocalSTT, Segmenter, isHallucination } from './loc
 import { SpeakerEngine, SpeakerTracker, splitUtterance, refineMeeting, speakerStats, voiceprintOf, toB64, fromB64, normalize } from './speakers.js';
 import { BuiltinLLM, recommendBuiltin } from './builtin-llm.js';
 import { resolveEngine, ollamaModels, pickInstalled, recommendLLM, pullModel, summarize, ask } from './llm.js';
+import { SAMPLE } from './sample.js';
 import { extractNotes, notesToSegments, MAX_NOTE_BYTES } from './notes.js';
 import { initVault, vaultInfo, ensureDir, readJSON, writeJSON, encryptTo, decryptRange, plainSize, appendEncrypted, storedSize } from './vault.js';
 
@@ -221,8 +222,8 @@ app.get('/api/local/status', wrap(async (_req, res) => {
   const installedPick = models && (LLM_MODEL !== 'auto' ? models.find((m) => m.name === LLM_MODEL) : pickInstalled(models));
   res.json({
     hardware: hardware(),
-    stt: { provider: useDeepgram() ? 'deepgram' : 'local', setting: STT_MODEL, ladder: sttLadder(LANGUAGE), chosen: stt.current(LANGUAGE, STT_MODEL), engine: stt.status() },
-    speaker: { enabled: speakerOn(), engine: spk.status(), voices: voices.length },
+    stt: { provider: useDeepgram() ? 'deepgram' : 'local', setting: STT_MODEL, ladder: sttLadder(LANGUAGE), chosen: stt.current(LANGUAGE, STT_MODEL), engine: stt.status(), cached: stt.cached(stt.current(LANGUAGE, STT_MODEL).id) },
+    speaker: { enabled: speakerOn(), engine: spk.status(), voices: voices.length, cached: fs.existsSync(spk.modelPath()) && fs.existsSync(spk.segModelPath()) },
     llm: { builtin: builtin.status(), reachable: models !== null, installed: models || [], chosen: installedPick || null, recommended: recommendLLM(), pull: pullState },
   });
 }));
@@ -586,6 +587,26 @@ app.get('/api/meetings/:id/audio', wrap((req, res) => {
   stream.on('error', () => res.destroy());
   res.on('close', () => stream.destroy());
   stream.pipe(res);
+}));
+
+/* -------------------------------------------------------------- sample meeting */
+
+// A fictional meeting for the "Getting started" tour. Created once; opening it again returns the same one.
+app.post('/api/sample', wrap((_req, res) => {
+  let m = [...meetings.values()].find((x) => x.sample);
+  if (!m) {
+    const now = new Date().toISOString();
+    const transcript = SAMPLE.transcript.map((t) => ({ ...t }));
+    const last = transcript.at(-1);
+    m = {
+      id: crypto.randomUUID(), title: SAMPLE.title, platform: 'sample', sample: true,
+      createdAt: now, endedAt: now, durationSec: last.start + last.dur, status: 'ended', hasAudio: false,
+      transcript, summary: { ...SAMPLE.summary, generatedAt: now },
+    };
+    meetings.set(m.id, m);
+    save(m);
+  }
+  res.json(publicMeeting(m));
 }));
 
 /* ------------------------------------------------------------ import notes */

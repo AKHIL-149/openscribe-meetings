@@ -15,6 +15,8 @@ No account, no subscription, and by default no audio or text leaves your compute
 
 **No API key is required for anything.** Deepgram, Claude and Recall.ai are optional upgrades you can ignore.
 
+**New to this?** Open the app and use the **Getting started** checklist on the first screen, or read the [beginner guide](public/getting-started.md) (also in the app under **? Help & getting started**). It covers setup, recording a call on Mac or Windows, and reading the results in plain language.
+
 ## System requirements
 
 | | Minimum (works, slower) | Recommended |
@@ -109,6 +111,13 @@ Paste a Meet, Zoom or Teams link under **Send a bot to the meeting**. A private 
 - **Privacy:** the bot window uses a temporary profile (no cookies or sign-ins are kept). Audio is processed on this computer; the call's audio is transcribed but **not saved** (only the transcript). Tell participants it is there; the bot's name is visible to everyone.
 - **Honest limits:** it drives the meeting websites like a person would, and those sites change. Selectors are text-based and best effort. Meetings that require signing in (some company Meet/Teams/Zoom settings) cannot be joined as a guest. Zoom's web client and Teams are the least tested. It was verified end to end against a simulated meeting (waiting room, WebRTC audio, call end), **not** against live Meet, Zoom or Teams calls.
 - **Browser version (`npm start`)** has no built-in bot. It can still use Recall.ai (paid cloud bot) if you add `RECALL_API_KEY`.
+
+## Getting started (built into the app)
+
+- **Checklist** on the New recording screen: speech model, summary model, audio check, sample meeting, first recording. It ticks itself off from the real state and can be hidden.
+- **Test audio** next to the audio input: listens for 6 seconds, shows a live level meter, and says what to fix (wrong input, nothing playing into BlackHole, microphone permission).
+- **Sample meeting**: a made-up meeting with a hand-written summary, four speakers, action items and "unsure" lines, so you can explore before recording. It contains no real data and can be deleted like any meeting.
+- **Help guide**: [`public/getting-started.md`](public/getting-started.md), shown inside the app.
 
 ## Import meeting notes
 

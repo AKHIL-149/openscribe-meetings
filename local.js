@@ -1,5 +1,6 @@
 // On-device speech-to-text: hardware detection, automatic Whisper model choice, and a speech
 // segmenter that cuts a live audio stream into utterances on pauses.
+import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fork } from 'child_process';
@@ -70,6 +71,15 @@ export class LocalSTT {
   }
 
   status() { return { ...this.state }; }
+
+  /** True when this model's files are already on disk (so the first recording starts instantly). */
+  cached(id) {
+    try {
+      const dir = path.join(this.cacheDir, id, 'onnx');
+      const files = fs.readdirSync(dir);
+      return files.some((f) => /^encoder_model.*\.onnx$/.test(f)) && files.some((f) => /^decoder_model.*\.onnx$/.test(f));
+    } catch { return false; }
+  }
 
   current(lang, override) {
     const ladder = sttLadder(lang);

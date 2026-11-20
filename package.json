@@ -48,6 +48,8 @@
       "builtin-llm.js",
       "speaker-worker.js",
       "speakers.js",
+      "notes.js",
+      "sample.js",
       "public/**",
       "electron/**",
       "package.json",
