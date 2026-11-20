@@ -212,6 +212,7 @@ export class SpeakerTracker {
     const keep = this.speakers.filter((s) => s.profile);
     this.speakers = [...keep, ...clusters.filter((c) => !keep.some((k) => k.name === c.name)).map((c, i) => ({ id: `r${i}`, name: c.name, profile: false, centroid: c.centroid, n: 8 }))];
     this.counter = Math.max(0, ...this.speakers.map((s) => Number((/^Speaker (\d+)$/.exec(s.name) || [])[1]) || 0));
+    this.last = null; // ids were rebuilt: the old "last speaker" no longer exists
   }
 
   _fresh() {
@@ -231,7 +232,8 @@ export class SpeakerTracker {
 
     let pick, uncertain = false;
     if (!best || best.sim < this.t.fresh) {
-      if (short && this.last) { pick = this.speakers.find((s) => s.id === this.last); uncertain = true; } // too brief to be a new person
+      const prev = short && this.last ? this.speakers.find((s) => s.id === this.last) : null;
+      if (prev) { pick = prev; uncertain = true; } // too brief to be a new person
       else { pick = this._fresh(); uncertain = noisy; } // a new voice heard only through noise is a guess
     } else if (best.sim >= this.t.match && margin >= this.t.margin) {
       pick = best.s;
